@@ -8,7 +8,7 @@ ax.set_xlabel("x")
 ax.set_ylabel("z")
 
 
-g  = 9.8 # gravity
+g  = 1.62 # gravity
 x0 = [0,10,20,35,45,50] # landing points
 z0 = [0,3,2,7,12,2] # landing points
 N  = len(x0)          # number of bounces
@@ -75,6 +75,6 @@ def OCP(w=[5,10,5],m='.'):
     return t_opt, x_opt, z_opt, T_opt
 
 
-OCP([5,10,0],'*')
-OCP([1,1,10])
+print(OCP([5,10,0],'*'))
+print(OCP([1,1,10]))
 plt.show()

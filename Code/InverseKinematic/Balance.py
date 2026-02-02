@@ -20,56 +20,91 @@ def setupView(limit,fig=None):
     ax.set_zlabel("Z")
     return ax
 
+def Rotx(theta):
+    return np.array([[1,0,0,0],
+                     [0,cos(theta),-sin(theta),0],
+                     [0,sin(theta),cos(theta),0],
+                     [0,0,0,1]])
+def Roty(theta):
+    return np.array([[cos(theta),0,sin(theta),0],
+                     [0,1,0,0],
+                     [-sin(theta),0,cos(theta),0],
+                     [0,0,0,1]])
+def Rotz(theta):
+    return np.array([[cos(theta),-sin(theta),0,0],
+                     [sin(theta),cos(theta),0,0],
+                     [0,0,1,0],
+                     [0,0,0,1]])
+
 def bodyIK(omega,phi,psi,xm,ym,zm):
-    Rx = np.array([[1,0,0,0],
-                   [0,np.cos(omega),-np.sin(omega),0],
-                   [0,np.sin(omega),np.cos(omega),0],[0,0,0,1]])
-    Ry = np.array([[np.cos(phi),0,np.sin(phi),0],
-                   [0,1,0,0],
-                   [-np.sin(phi),0,np.cos(phi),0],[0,0,0,1]])
-    Rz = np.array([[np.cos(psi),-np.sin(psi),0,0],
-                   [np.sin(psi),np.cos(psi),0,0],[0,0,1,0],[0,0,0,1]])
+    '''
+    input: body euler angles (rad) and body center position (xm,ym,zm)
+    output: transformation matrices of 4 body corners (Tlf,Trf,Tlb,Trb)
+    ---------------------------------------------------------------------------
+    Tlf: transformation matrix of left front corner
+    Trf: transformation matrix of right front corner
+    Tlb: transformation matrix of left back corner
+    Trb: transformation matrix of right back corner
+    ---------------------------------------------------------------------------
+    Here we use X for heading, Z for vertical, Y for lateral
+    '''
+    Rx = Rotx(omega)
+    Ry = Roty(phi)
+    Rz = Rotz(psi)
     Rxyz=Rx@Ry@Rz
 
-    T = np.array([[0,0,0,xm],[0,0,0,ym],[0,0,0,zm],[0,0,0,0]])
-    Tm = T+Rxyz
+    T   = np.array([[0,0,0,xm],[0,0,0,ym],[0,0,0,zm],[0,0,0,0]]) #translation matrix
+    Tm  = T+Rxyz
+    Tfl = Tm@(Roty(pi/2)+np.array([[0,0,0,L/2],[0,0,0,W/2],[0,0,0,H],[0,0,0,0]]))
+    Tfr = Tm@(Roty(pi/2)+np.array([[0,0,0,L/2],[0,0,0,-W/2],[0,0,0,H],[0,0,0,0]]))
+    Tbl = Tm@(Roty(pi/2)+np.array([[0,0,0,-L/2],[0,0,0,W/2],[0,0,0,H],[0,0,0,0]]))
+    Tbr = Tm@(Roty(pi/2)+np.array([[0,0,0,-L/2],[0,0,0,-W/2],[0,0,0,H],[0,0,0,0]]))
 
-    return([Tm @ np.array([[cHp,0,sHp,L/2],[0,1,0,0],[-sHp,0,cHp,W/2],[0,0,0,1]]),
-           Tm @ np.array([[cHp,0,sHp,L/2],[0,1,0,0],[-sHp,0,cHp,-W/2],[0,0,0,1]]),
-           Tm @ np.array([[cHp,0,sHp,-L/2],[0,1,0,0],[-sHp,0,cHp,W/2],[0,0,0,1]]),
-           Tm @ np.array([[cHp,0,sHp,-L/2],[0,1,0,0],[-sHp,0,cHp,-W/2],[0,0,0,1]])
-           ])
+    return np.array([Tfl,Tfr,Tbl,Tbr])
 
 def legIK(point):
+    '''
+    input: foot position in leg frame (x,y,z)
+    output: leg joint angles (theta1,theta2,theta3) in rad
+    ---------------------------------------------------------------------------
+    theta1: hip yaw angle
+    theta2: hip pitch angle
+    theta3: knee pitch angle
+    ---------------------------------------------------------------------------
+    '''
     (x,y,z)=(point[0],point[1],point[2])
     F=sqrt(x**2+y**2-l1**2)
     G=F-l2  
     H=sqrt(G**2+z**2)
-    theta1=-atan2(y,x)-atan2(F,-l1)
+    theta1=-atan2(x,y)+atan2(F,l1)
 
-    D=(H**2-l3**2-l4**2)/(2*l3*l4)
+    D=(l3**2+l4**2-H**2)/(2*l3*l4)
     theta3=acos(D) 
 
-    theta2=atan2(z,G)-atan2(l4*sin(theta3),l3+l4*cos(theta3))
-
+    theta2=-atan2(z,G)+atan2(l4*sin(theta3),l3-l4*cos(theta3))
+    print(f"IK angles: {degrees(theta1):.2f}, {degrees(theta2):.2f}, {degrees(theta3):.2f}")
     return(theta1,theta2,theta3)
 
 def calcLegPoints(angles):
+    '''
+    input: leg joint angles (theta1,theta2,theta3) in rad
+    output: transformation matrices of leg points (T0,T1,T2,T3,T4) from leg base to foot
+    '''
     (theta1,theta2,theta3)=angles
-    theta23=theta2+theta3
+    theta23=theta3+theta2
 
     T0=Lo
-    T1=T0+np.array([-l1*cos(theta1),l1*sin(theta1),0,0])
-    T2=T1+np.array([-l2*sin(theta1),-l2*cos(theta1),0,0])
-    T3=T2+np.array([-l3*sin(theta1)*cos(theta2),-l3*cos(theta1)*cos(theta2),l3*sin(theta2),0])
-    T4=T3+np.array([-l4*sin(theta1)*cos(theta23),-l4*cos(theta1)*cos(theta23),l4*sin(theta23),0])
+    T1=T0+np.array([-l1*sin(theta1),l1*cos(theta1),0,0])
+    T2=T1+np.array([l2*cos(theta1),l2*sin(theta1),0,0])
+    T3=T2+np.array([l3*cos(theta1)*cos(theta2),l3*sin(theta1)*cos(theta2),-l3*sin(theta2),0])
+    T4=T3+np.array([-l4*cos(theta1)*cos(theta23),-l4*sin(theta1)*cos(theta23),l4*sin(theta23),0])
 
     return np.array([T0,T1,T2,T3,T4])
 
 def drawLegPoints(p,ax):
-    ax.plot([x[0] for x in p],[x[2] for x in p],[x[1] for x in p], 'k-', lw=3)
-    ax.plot([p[0][0]],[p[0][2]],[p[0][1]],'bo',lw=2)
-    ax.plot([p[4][0]],[p[4][2]],[p[4][1]],'ro',lw=2)    
+    ax.plot([x[0] for x in p],[x[1] for x in p],[x[2] for x in p], 'k-', lw=3)
+    ax.plot([p[0][0]],[p[0][1]],[p[0][2]],'bo',lw=2)
+    ax.plot([p[4][0]],[p[4][1]],[p[4][2]],'ro',lw=2)    
 
 def drawLegPair(Tl,Tr,Ll,Lr,ax):
     Ix=np.array([[-1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]])
@@ -89,7 +124,7 @@ def drawRobot(Lp,angles,center,ax):
         return
 
     CPs=[CP[x] for x in [0,1,3,2,0]]
-    ax.plot([x[0] for x in CPs],[x[2] for x in CPs],[x[1] for x in CPs], 'bo-', lw=2)
+    ax.plot([x[0] for x in CPs],[x[1] for x in CPs],[x[2] for x in CPs], 'bo-', lw=2)
 
     try:
         drawLegPair(Tlf,Trf,Lp[0],Lp[1],ax)
@@ -106,7 +141,7 @@ def lev(X,Y,m1,m2):
 def update_plot(val):
     m1, m2 = multiplier_slider1.val, multiplier_slider2.val
     Z = lev(X,Y,m1,m2)
-    Lp=np.array([[100,lev(100,100,m1,m2),100,1],[100,lev(100,-100,m1,m2),-100,1],[-100,lev(-100,100,m1,m2),100,1],[-100,lev(-100,-100,m1,m2),-100,1]])
+    Lp=np.array([[100,100,lev(100,100,m1,m2),1],[100,-100,lev(100,-100,m1,m2),1],[-100,100,lev(-100,100,m1,m2),1],[-100,-100,lev(-100,-100,m1,m2),1]])
     ax.clear()
     ax.set_xlim(-200, 200)
     ax.set_ylim(-200, 200)
@@ -122,8 +157,9 @@ l4=80
 
 L = 120
 W = 90
+H = 0
 
-Lp=np.array([[100,-100,100,1],[100,-100,-100,1],[-100,-100,100,1],[-100,-100,-100,1]])
+Lp=np.array([[100,100,-100,1],[100,-100,-100,1],[-100,100,-100,1],[-100,-100,-100,1]])
 
 sHp=np.sin(pi/2)
 cHp=np.cos(pi/2)
