@@ -34,7 +34,7 @@ def Rotz(theta):
     )
     
 def R_zyx(phi, theta, psi):
-    return (Rotz(psi) @ Roty(theta) @ Rotx(phi))[0:3,0:3]
+    return (Rotz(psi) @ Roty(theta) @ Rotx(phi))
 
 def skew(v):
     return ca.vertcat(
@@ -76,7 +76,30 @@ class QuadDynamicsCasadi:
         x,y,z,phi,theta,psi = qb[0], qb[1], qb[2], qb[3], qb[4], qb[5]
         T = ca.eye(4)
         T[0:3,3] = ca.vertcat(x,y,z)
-        return T @ R_zyx(phi, theta, psi)
+        return R_zyx(phi, theta, psi)@T
+    
+    def leg2body(self):
+        Ry = Roty(pi/2)
+
+        def T(dx,dy):
+            return Ry+ca.vertcat(
+                ca.horzcat(0,0,0,dx),
+                ca.horzcat(0,0,0,dy),
+                ca.horzcat(0,0,0,self.H),
+                ca.horzcat(0,0,0,0)
+            )
+        return [
+            T( self.L/2,  self.W/2),
+            T( self.L/2, -self.W/2),
+            T(-self.L/2,  self.W/2),
+            T(-self.L/2, -self.W/2)
+        ]
+
+    # ------------------------------------------------------
+    def leg2world(self, qb):
+        #### Iy ??????????????????????????
+        Tm = self.body2world(qb)
+        return [Tm @ T for T in self.leg2body()]
     
     def euler2angular(self,qb,dqb):
         phi, theta = qb[3], qb[4]
@@ -91,7 +114,11 @@ class QuadDynamicsCasadi:
     def inertia(self,qb):
         # Inertia in world frame
         phi, theta, psi = qb[3], qb[4], qb[5]
-        R = R_zyx(phi, theta, psi)
+        R = R_zyx(phi, theta, psi)[:3,:3]
+        M = ca.SX.zeros(6,6)
+        M[0:3,0:3] = self.m*ca.SX.eye(3)
+        M[3:6,3:6] = R @ self.Ib @ R
+        
     
     def gravity(self,g=9.81):
         # Gravity in world frame

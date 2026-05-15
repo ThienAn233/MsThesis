@@ -23,7 +23,7 @@ def Rotz(theta): # Rotation about z-axis
     
 def R_zyx(phi, theta, psi):
     """Rotation matrix R = Rz(psi) * Ry(theta) * Rx(phi)."""
-    return (Rotz(psi) @ Roty(theta) @ Rotx(phi))[:3,:3]
+    return (Rotx(phi) @ Roty(theta) @ Rotz(psi))[:3,:3]
 
 def skew(v):
     return np.array([
@@ -129,6 +129,8 @@ class QuadDynamics:
         output: list of transformation matrices of leg points (T0,T1,T2,T3,T4) from leg base
         '''
         (theta1,theta2,theta3)=angles
+        theta2=-theta2
+        theta3=-theta3
         theta23=theta3+theta2
 
         T0=self.Lo
@@ -136,6 +138,7 @@ class QuadDynamics:
         T2=T1+np.array([self.l2*cos(theta1),self.l2*sin(theta1),0,0])
         T3=T2+np.array([self.l3*cos(theta1)*cos(theta2),self.l3*sin(theta1)*cos(theta2),-self.l3*sin(theta2),0])
         T4=T3+np.array([-self.l4*cos(theta1)*cos(theta23),-self.l4*sin(theta1)*cos(theta23),self.l4*sin(theta23),0])
+        print("Leg points (local frame):", [T0,T1,T2,T3,T4])
         return np.array([T0,T1,T2,T3,T4])
     
     def get_base_frame_contact_point(self,angles):
@@ -365,6 +368,7 @@ class QuadDynamics:
         self.setupView(2).view_init(elev=12., azim=28)
         try:
             angles = self.inverse_kinematics(qb, Lp)
+            print("IK angles for visualization:", angles)
         except:
             print("IK Error: cannot visualize robot, check leg lengths/positions (IK failure)")
             return
@@ -374,7 +378,7 @@ class QuadDynamics:
             print("FK Error: cannot visualize robot, check body angles/position (FK failure)")
             return
         CPs=[leg_points[x] for x in [0,5,15,10,0]]
-        plt.plot([x[0] for x in CPs],[x[1] for x in CPs],[x[2] for x in CPs], 'bo-', lw=2)
+        plt.plot([x[0] for x in CPs],[x[1] for x in CPs],[x[2] for x in CPs], 'bo-', lw=.2)
         self.drawLegPoints(leg_points[0:5])
         self.drawLegPoints(leg_points[5:10])
         self.drawLegPoints(leg_points[10:15])
@@ -415,10 +419,10 @@ if __name__ == "__main__":
     # -----------------------------
     # Joint configuration
     # -----------------------------
-    qj = np.radians(np.array([[0, 90, 30],
-                           [0, 90, 30],
-                           [0, 90, 30],
-                           [0, 90, 30]]))  # 4 legs × 3 joints
+    qj = np.radians(np.array([[0, -45, -90],
+                           [0, -45, -90],
+                           [0, -45, -90],
+                           [0, -45, -90]]))  # 4 legs × 3 joints
 
     # -----------------------------
     # World / body transforms

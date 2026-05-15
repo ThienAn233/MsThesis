@@ -78,22 +78,20 @@ class QuadDynamicsCasadi:
         ])
 
     # ------------------------------------------------------
-    def world_2_body(self, qb):
-        x,y,z,phi,theta,psi = qb[0], qb[1], qb[2], qb[3], qb[4], qb[5]
-        T = ca.vertcat(
-            ca.horzcat(0,0,0,x),
-            ca.horzcat(0,0,0,y),
-            ca.horzcat(0,0,0,z),
-            ca.horzcat(0,0,0,0)
-        )
-        return T + Rotx(phi) @ Roty(theta) @ Rotz(psi)
+    def body2world(self,qb):
+        x,y,z,omega,phi,psi = qb[0], qb[1], qb[2], qb[3], qb[4], qb[5]
+        T = Rotz(psi) @ Roty(phi) @ Rotx(omega)
+        T[0,3] = x
+        T[1,3] = y
+        T[2,3] = z
+        return T  
 
     # ------------------------------------------------------
-    def body_2_leg(self):
+    def leg2body(self):
         Ry = Roty(pi/2)
 
         def T(dx,dy):
-            return Ry + ca.vertcat(
+            return Ry+ca.vertcat(
                 ca.horzcat(0,0,0,dx),
                 ca.horzcat(0,0,0,dy),
                 ca.horzcat(0,0,0,self.H),
@@ -107,15 +105,14 @@ class QuadDynamicsCasadi:
         ]
 
     # ------------------------------------------------------
-    def world_2_leg(self, qb):
-        Tm = self.world_2_body(qb)
-        return [Tm @ T for T in self.body_2_leg()]
+    def leg2world(self, qb):
+        Tm = self.body2world(qb)
+        return [Tm @ T for T in self.leg2body()]
 
     # ------------------------------------------------------
     def calcLegPoints(self, q):
         t1,t2,t3 = q[0], q[1], q[2]
         t23 = t2 + t3
-
         T0 = self.Lo
         T1 = T0 + ca.vertcat(-self.l1*ca.sin(t1), self.l1*ca.cos(t1), 0, 0)
         T2 = T1 + ca.vertcat(self.l2*ca.cos(t1), self.l2*ca.sin(t1), 0, 0)
@@ -135,7 +132,7 @@ class QuadDynamicsCasadi:
 
     # ------------------------------------------------------
     def get_world_frame_contact_point(self,qb,qj):
-        Tlegs = self.world_2_leg(qb)
+        Tlegs = self.leg2world(qb)
         cps = []
         cps.append((Tlegs[0] @ self.calcLegPoints(qj[0:3])[-1])[:3])
         cps.append((Tlegs[1] @ self.Iy @ self.calcLegPoints(qj[3:6])[-1])[:3])
@@ -156,21 +153,21 @@ class QuadDynamicsCasadi:
         jfr = [fr[0], fr[1], fr[3]]
         jbl = [bl[0], bl[1], bl[3]]
         jbr = [br[0], br[1], br[3]]
-        Tf = self.world_2_leg(qb)
+        Tf = self.leg2world(qb)
         joint_positions += [(Tf[0]@x)[:3] for x in jfl]
         joint_positions += [(Tf[1]@self.Iy@x)[:3] for x in jfr]
         joint_positions += [(Tf[2]@x)[:3] for x in jbl]
         joint_positions += [(Tf[3]@self.Iy@x)[:3] for x in jbr]
-        joint_axes += [ca.DM([0,0,1])]
+        joint_axes += [(Tf[0]@ca.DM([0,0,1,0]))[:3]]
         joint_axes += [(Tf[0]@Rotz(qj[0][0])@ca.DM([0,1,0,0]))[:3]]
         joint_axes += [(Tf[0]@Rotz(qj[0][0])@ca.DM([0,1,0,0]))[:3]]
-        joint_axes += [ca.DM([0,0,1])]
+        joint_axes += [(Tf[1]@ca.DM([0,0,1,0]))[:3]]
         joint_axes += [(Tf[1]@self.Iy@Rotz(qj[1][0])@ca.DM([0,1,0,0]))[:3]]
         joint_axes += [(Tf[1]@self.Iy@Rotz(qj[1][0])@ca.DM([0,1,0,0]))[:3]]
-        joint_axes += [ca.DM([0,0,1])]
+        joint_axes += [(Tf[2]@ca.DM([0,0,1,0]))[:3]]
         joint_axes += [(Tf[2]@Rotz(qj[2][0])@ca.DM([0,1,0,0]))[:3]]
         joint_axes += [(Tf[2]@Rotz(qj[2][0])@ca.DM([0,1,0,0]))[:3]]
-        joint_axes += [ca.DM([0,0,1])]
+        joint_axes += [(Tf[3]@ca.DM([0,0,1,0]))[:3]]
         joint_axes += [(Tf[3]@self.Iy@Rotz(qj[3][0])@ca.DM([0,1,0,0]))[:3]]
         joint_axes += [(Tf[3]@self.Iy@Rotz(qj[3][0])@ca.DM([0,1,0,0]))[:3]]
         return contact_pts, joint_positions, joint_axes
@@ -204,12 +201,19 @@ class QuadDynamicsCasadi:
         return ca.vertcat(0,0,-self.m*g,0,0,0)
 
     # ------------------------------------------------------
-    def coriolis_term(self,qb, dq):
+    def coriolis_term(self, qb, dq):
         R = R_zyx(qb[3], qb[4], qb[5])
-        w = dq[3:6]
-        Sw = skew(w)
-        return ca.blockcat([[self.m * Sw,         ca.DM.zeros(3,3)],
-                            [ca.DM.zeros(3,3),    Sw @ R @ self.Ib @ R.T]])
+        Iw = R @ self.Ib @ R.T
+
+        v = dq[0:3]   # COM linear velocity (world)
+        w = dq[3:6]   # angular velocity (world)
+
+        # f_c = self.m * skew(w) @ v
+        f_c = ca.SX.zeros(3) 
+        tau_c = skew(w) @ (Iw @ w)
+
+        return ca.vertcat(f_c, tau_c)
+
 
     # ------------------------------------------------------
     def J_contact_base(self, qb, world_foot_points):
@@ -247,7 +251,7 @@ class QuadDynamicsCasadi:
         return J
     # ------------------------------------------------------
     def get_Euler_rate_matrix(self,phi,theta,psi):
-        rate = E = ca.vertcat(
+        rate = ca.vertcat(
             ca.horzcat(1, 0, -ca.sin(theta)),
             ca.horzcat(0, ca.cos(phi), ca.cos(theta)*ca.sin(phi)),
             ca.horzcat(0, -ca.sin(phi), ca.cos(theta)*ca.cos(phi))
@@ -261,7 +265,7 @@ class QuadDynamicsCasadi:
     def forward_kinematics(self,qb,j_angles):
         leg_points = []
         try:
-            Tfl, Tfr, Tbl, Tbr = self.world_2_leg(qb)
+            Tfl, Tfr, Tbl, Tbr = self.leg2world(qb)
         except ValueError:
             print("FK Error: check body angles/position")
             return
@@ -275,14 +279,14 @@ class QuadDynamicsCasadi:
     def inverse_kinematics(self,qb,leg_points):
         j_angles = []
         try:
-            Tfl, Tfr, Tbl, Tbr = self.world_2_leg(qb)
+            Tfl, Tfr, Tbl, Tbr = self.leg2world(qb)
         except ValueError:
             print("IK Error: check body angles/position")
             return
-        j_angles += [self.leg_ik(ca.inv(Tfl)@ca.vertcat(leg_points[0],leg_points[1],leg_points[2],ca.DM(1)))]
-        j_angles += [self.leg_ik(self.Iy@ca.inv(Tfr)@ca.vertcat(leg_points[3],leg_points[4],leg_points[5],ca.DM(1)))]
-        j_angles += [self.leg_ik(ca.inv(Tbl)@ca.vertcat(leg_points[6],leg_points[7],leg_points[8],ca.DM(1)))]
-        j_angles += [self.leg_ik(self.Iy@ca.inv(Tbr)@ca.vertcat(leg_points[9],leg_points[10],leg_points[11],ca.DM(1)))]
+        j_angles += [self.leg_ik(ca.solve(Tfl,ca.vertcat(leg_points[0],leg_points[1],leg_points[2],ca.SX(1))))]
+        j_angles += [self.leg_ik(self.Iy@ca.solve(Tfr,ca.vertcat(leg_points[3],leg_points[4],leg_points[5],ca.SX(1))))]
+        j_angles += [self.leg_ik(ca.solve(Tbl,ca.vertcat(leg_points[6],leg_points[7],leg_points[8],ca.SX(1))))]
+        j_angles += [self.leg_ik(self.Iy@ca.solve(Tbr,ca.vertcat(leg_points[9],leg_points[10],leg_points[11],ca.SX(1))))]
         return ca.vertcat(*j_angles)
     # ------------------------------------------------------
     def setupView(self,ax=None,limit=5.0):
@@ -294,9 +298,9 @@ class QuadDynamicsCasadi:
         return ax
     # ------------------------------------------------------
     def drawLegPoints(self,p):
-        plt.plot([x[0] for x in p],[x[1] for x in p],[x[2] for x in p], 'k-', lw=3)
-        plt.plot([p[0][0]],[p[0][1]],[p[0][2]],'bo',lw=2)
-        plt.plot([p[4][0]],[p[4][1]],[p[4][2]],'ro',lw=2)  
+        plt.plot(ca.DM(ca.vertcat(*[x[0] for x in p])).full(),ca.DM(ca.vertcat(*[x[1] for x in p])).full(),ca.DM(ca.vertcat(*[x[2] for x in p])).full(), 'k-', lw=3)
+        plt.plot(ca.DM(ca.vertcat(*[p[0][0]])).full(),ca.DM(ca.vertcat(*[p[0][1]])).full(),ca.DM(ca.vertcat(*[p[0][2]])).full(),'bo',lw=2)
+        plt.plot(ca.DM(ca.vertcat(*[p[4][0]])).full(),ca.DM(ca.vertcat(*[p[4][1]])).full(),ca.DM(ca.vertcat(*[p[4][2]])).full(),'yo',lw=2)  
     # ------------------------------------------------------
     def visualize_robot(self, angles, qb):
         try:
@@ -305,7 +309,9 @@ class QuadDynamicsCasadi:
             print("FK Error: cannot visualize robot, check body angles/position (FK failure)")
             return
         CPs=[leg_points[x] for x in [0,5,15,10,0]]
-        plt.plot([x[0] for x in CPs],[x[1] for x in CPs],[x[2] for x in CPs], 'bo-', lw=2)
+        qbdm = ca.DM(qb).full().flatten()
+        plt.plot(qbdm[0], qbdm[1], qbdm[2], 'ro', label='COM')
+        plt.plot(ca.DM(ca.vertcat(*[x[0] for x in CPs])).full(),ca.DM(ca.vertcat(*[x[1] for x in CPs])).full(),ca.DM(ca.vertcat(*[x[2] for x in CPs])).full(), 'bo-', lw=2)
         self.drawLegPoints(leg_points[0:5])
         self.drawLegPoints(leg_points[5:10])
         self.drawLegPoints(leg_points[10:15])
@@ -329,15 +335,15 @@ if __name__ == "__main__":
     qb = ca.DM([0,0,0,0,0,0])
     dq = ca.DM.zeros(6)
 
-    qj = ca.DM([0.0, -pi/4, -pi/2,
-                0.0, -pi/4, -pi/2,
-                0.0, -pi/4, -pi/2,
-                0.0, -pi/4, -pi/2])
+    qj = ca.DM([0.0, pi/4, pi/2,
+                0.0, pi/4, pi/2,
+                0.0, pi/4, pi/2,
+                0.0, pi/4, pi/2])
 
     
-    T_body = quad.world_2_body(qb)
-    T_legs = quad.body_2_leg()
-    T      = quad.world_2_leg(qb)
+    T_body = quad.body2world(qb)
+    T_legs = quad.leg2body()
+    T      = quad.leg2world(qb)
     print("Body Transformation dim:", T_body.shape)
     print("Leg Transformations dim:", [T.shape for T in T_legs])
     print("World to Leg Transformations dim:", [T.shape for T in T])
@@ -355,9 +361,11 @@ if __name__ == "__main__":
     
     contact_pts = quad.get_world_frame_contact_point(qb,qj)
     print("Contact Points dim:",[cp.shape for cp in contact_pts])
+    print("Contact Points:", ca.DM(ca.vertcat(*contact_pts)).full().T) 
     
     J_cb = quad.J_contact_base(qb, contact_pts)
     print("J_contact_base dim:", J_cb.shape)
+    print("J_contact_base:", ca.DM(J_cb).full().T)
     
     data = quad.get_contact_joints_axis(qb, qj)
     print("Contact pts dim:", [dat.shape for dat in data[0]])

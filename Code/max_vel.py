@@ -3,23 +3,32 @@ from httpx import get
 from utilscasadi import *
 import numpy as np
 
-T  = [SX.sym('T_g'), SX.sym('T_f')]
-N  = 50           # Number of time steps at each phase
-dt = T
-mu = 0.5          # friction coefficient
-gravity = .62    # gravity
+T  = ca.SX.sym('T') # Total ground time (s)
+N  = 50             # Number of time steps at ground
+dt = T / N  
+mu = 0.5            # friction coefficient
+gravity = 9.81      # gravity
 
 
 robot_params = {
-        'L': 2.0,
-        'W': 1.0,
+        'L': .50,
+        'W': .25,
         'H': 0.0,
-        'm': 50.0,
-        'l1': .20,
+        'm': 7.0,
+        'l1': .05,
         'l2': 0.0,
-        'l3': 0.8,
-        'l4': 0.8,
+        'l3': 0.2,
+        'l4': 0.2,
     }
+
+def roll_foward_dynamics(s_bopt,s_jopt, u_opt,dt=0.1,N=20):
+    out = []
+    s_now = s_bopt
+    for i in range(N-1):
+        out += [s_now+dt*dyanmics(s_now,s_jopt, u_opt)]
+        s_now = out[-1]
+    return out    
+
 
 # Create symbolic variables for each time step
 x_list, y_list, z_list, vx_list, vy_list, vz_list, phi_list, theta_list, psi_list, wphi_list, wtheta_list, wpsi_list, jfl1_list, jfl2_list, jfl3_list, jfr1_list, jfr2_list, jfr3_list, jbl1_list, jbl2_list, jbl3_list, jbr1_list, jbr2_list, jbr3_list = [], [], [], [], [], [], [], [], [], [], [], [], [], [], [], [], [], [], [], [], [], [], [], []
@@ -52,7 +61,7 @@ control_dict = {
     'u_br': [u_brx_list, u_bry_list, u_brz_list],
 }
 
-for i in range(Ng):
+for i in range(N):
     x_list.append(SX.sym(f'x_{i}'))
     y_list.append(SX.sym(f'y_{i}'))
     z_list.append(SX.sym(f'z_{i}'))
@@ -77,8 +86,6 @@ for i in range(Ng):
     jbr1_list.append(SX.sym(f'jbr1_{i}'))
     jbr2_list.append(SX.sym(f'jbr2_{i}'))
     jbr3_list.append(SX.sym(f'jbr3_{i}'))
-    
-for i in range(Ng):
     u_flx_list.append(SX.sym(f'u_flx_{i}'))
     u_fly_list.append(SX.sym(f'u_fly_{i}'))
     u_flz_list.append(SX.sym(f'u_flz_{i}'))
@@ -95,7 +102,7 @@ for i in range(Ng):
 # Create optimization variable vector by stacking all variables
 S = vertcat(*x_list, *y_list, *z_list, *phi_list, *theta_list, *psi_list, *vx_list, *vy_list, *vz_list, *wphi_list, *wtheta_list, *wpsi_list, *jfl1_list, *jfl2_list, *jfl3_list, *jfr1_list, *jfr2_list, *jfr3_list, *jbl1_list, *jbl2_list, *jbl3_list, *jbr1_list, *jbr2_list, *jbr3_list)
 U = vertcat(*u_flx_list, *u_fly_list, *u_flz_list, *u_frx_list, *u_fry_list, *u_frz_list, *u_blx_list, *u_bly_list, *u_blz_list, *u_brx_list, *u_bry_list, *u_brz_list)
-X = vertcat(S, U)
+X = vertcat(S, U, T)
 # Helpers to extract state at a given timestep
 def get_b_state(i):
     return vertcat(x_list[i], y_list[i], z_list[i], phi_list[i], theta_list[i], psi_list[i], vx_list[i], vy_list[i], vz_list[i], wphi_list[i], wtheta_list[i], wpsi_list[i])
@@ -121,11 +128,11 @@ def dyanmics(sb, sj, u):
     j_state = sj
     rate = quad.get_Euler_rate_matrix(b_state[3], b_state[4], b_state[5])
     M = quad.inertia_matrix(b_state[0:6])
-    C = quad.coriolis_term(b_state[0:6],rate@b_state[6:12])
+    # C = quad.coriolis_term(b_state[0:6],rate@b_state[6:12])
     G = quad.gravity_vector(gravity)
     
     J_cb = quad.J_contact_base(b_state,quad.get_world_frame_contact_point(b_state,j_state))
-    ds = solve(M, (J_cb.T @ u - 0*C - G))
+    ds = solve(M, (J_cb.T @ u + G))
     ds = vertcat(b_state[6:12], ds)
     return ds
 
@@ -144,47 +151,32 @@ for i in range(N-1):
     sbp1 = get_b_state(i+1)
     sj   = get_j_state(i)
     sjp1 = get_j_state(i+1)
-    if i < Ng-1:
-        u    = get_control(i)
-        up1  = get_control(i+1)
-    else:
-        u    = DM.zeros(12)
-        up1  = DM.zeros(12)
+    u    = get_control(i)
+    up1  = get_control(i+1)
     fi   = dyanmics(sb, sj, u) 
     fip1 = dyanmics(sbp1, sjp1, up1)
-    if i < Ng:
-        g.append(sbp1 - sb - (dtg/2)*(fi + fip1)) 
-    else:
-        g.append(sbp1 - sb - (dtf/2)*(fi + fip1)) 
+    g.append(sbp1 - sb - (dt/2)*(fi + fip1)) 
+
 
 
 # Initial and final conditions
-foot_points = DM([1, 0.5, 0,
-                     1,-0.5, 0,
-                    -1, 0.5, 0,
-                    -1,-0.5, 0])
-initial_body_position  = vertcat(0,0,.8*sqrt(2),0,0,0,.2,0,0,0,0,0)
-initial_leg_positions  = quad.inverse_kinematics(initial_body_position, foot_points)
-initial_leg_forces     = vertcat(0,0,robot_params['m']*gravity/4, 0,0,robot_params['m']*gravity/4, 0,0,robot_params['m']*gravity/4, 0,0,robot_params['m']*gravity/4)
-terminal_body_position = vertcat(4,0,.8*sqrt(2),0,0,0,.2,0,0,0,0,0)
-terminal_leg_positions = vertcat(0,pi/3,pi/6,  0,pi/3,pi/6,  0,pi/3,pi/6,  0,pi/3,pi/6)
-terminal_leg_forces    = initial_leg_forces
+foot_points = DM([.25, 0.6/4, 0,
+                     .25,-0.6/4, 0,
+                    -.25, 0.6/4, 0,
+                    -.25,-0.6/4, 0])
+initial_body_position  = vertcat(0,0,.3,0,0,0,1.52,0,-2.48,0,0,0)
+terminal_body_position = vertcat(0,0,.2,0,0,0,0,0,0,0,0,0)
 
-g.append(get_b_state(0)[0:3] - initial_body_position[0:3])    
+g.append(get_b_state(0)[0:12] - initial_body_position[0:12])    
 # g.append(get_control(0) - initial_leg_forces)   
 # g.append(get_b_state(0)[6:9] - initial_body_position[6:9])                   
-g.append(get_b_state(N - 1)[:3] - terminal_body_position[:3])    
 # g.append(get_control(Ng - 1) - terminal_leg_forces)
-# g.append(get_b_state(N - 1)[6:9] - terminal_body_position[6:9]) 
+g.append(get_b_state(N - 1)[6:12] - terminal_body_position[6:12]) 
+# g.append(get_b_state(N - 1)[6:12] - get_b_state(N - 2)[6:12]) # zero velocity at take-off
 
-# When leg flying: contact force must be zero
-# for i in range(Ng,Ng+Nf):
-#     u = get_control(i)
-#     for j in range(12):
-#         g.append(u[j])
 
 # When leg touch ground: foot position constraints + friction cone constraints
-for i in range(Ng):
+for i in range(N):
     qb = get_b_state(i)[0:6]
     qj = get_j_state(i)
     u  = get_control(i)
@@ -194,7 +186,7 @@ for i in range(Ng):
             l = lp[idx][j] - foot_points[i*3 + j]
             # foot points constraint
             g.append(l)
-for j in range(Ng):
+for j in range(N):
     u = get_control(j)
     qb = get_b_state(j)
     for i in range(4):
@@ -203,25 +195,23 @@ for j in range(Ng):
         uz = u[i*3 + 2]
         # friction cone constraint
         g.append( sqrt(ux**2 + uy**2 + 1e-6) - mu*uz)
-        g.append(1-qb[2]) 
+        g.append(.7/4-qb[2])
 ################### End of constraints list ###################
 
 
 
 ################### Objective: minimize total control effort ###################
-f = 0
-for i in range(Ng-1):
+f = 0#-100*vx_list[-1]**2 - vz_list[-1]**2 # take-off velocity objective
+for i in range(N-1):
     u_i   = get_control(i)
     u_ip1 = get_control(i + 1)
     sb    = get_b_state(i)
     sbp1  = get_b_state(i + 1)
-    rot_i = sb[3:6]
-    rot_ip1 = sbp1[3:6]
-    sj  = get_j_state(i) - terminal_leg_positions
-    sj_ip1 = get_j_state(i + 1) - terminal_leg_positions
+
+
     tau = get_tau(sb,get_j_state(i), u_i)
     tau_ip1 = get_tau(sbp1,get_j_state(i + 1), u_ip1)
-    f +=  0.5 * dtg * (0*(u_i.T @ u_i + u_ip1.T @ u_ip1) + 0*(tau.T @ tau + tau_ip1.T @ tau_ip1) + 10000*(rot_i.T @ rot_i + rot_ip1.T @ rot_ip1) + (sj.T @ sj + sj_ip1.T @ sj_ip1))
+    f +=  0.5 * dt * (0.1*(u_i.T @ u_i + u_ip1.T @ u_ip1) + 0*(tau.T @ tau + tau_ip1.T @ tau_ip1))
 ################### End of objective ###################
 
 
@@ -229,59 +219,52 @@ for i in range(Ng-1):
 ################### Set up NLP ###################
 G = vertcat(*g)
 nlp = {'x': X, 'f': f, 'g': G}
-solver = nlpsol('S', 'ipopt', nlp)
+options = {'ipopt': {'max_iter': 50000,}}# 'print_level': 0, 'sb': 'yes'}, 'print_time': 0}
+solver = nlpsol('S', 'ipopt', nlp, options)
 ################### End of NLP setup ###################
 
 
 
 ################### Setup bounds for variables ###################
 # print("Shape of optimization variable X:", X.shape)
-lbx = [-inf]*12*N + [-pi/6]*N + [-pi/2]*N + [ 0]*N + [ -pi/6]*N + [-pi/2]*N + [ 0]*N + [-pi/6]*N + [-pi/2]*N + [ 0]*N + [-pi/6]*N + [-pi/2]*N + [ 0]*N + [-100]*2*Ng + [0]*Ng + [-100]*2*Ng + [0]*Ng + [-100]*2*Ng + [0]*Ng +[-100]*2*Ng + [0]*Ng
-ubx = [ inf]*12*N + [ pi/6]*N + [ pi/2]*N + [pi]*N + [ pi/6]*N + [ pi/2]*N + [pi]*N + [ pi/6]*N + [ pi/2]*N + [pi]*N + [ pi/6]*N + [ pi/2]*N + [pi]*N + [ 100]*12*Ng
+lbx = [-inf]*12*N + [-pi/6]*N + [-pi/2]*N + [ 0]*N + [-pi/6]*N + [-pi/2]*N + [ 0]*N + [-pi/6]*N + [-pi/2]*N + [ 0]*N + [-pi/6]*N + [-pi/2]*N + [ 0]*N + [-500]*12*N + [0] 
+ubx = [ inf]*12*N + [ pi/6]*N + [ pi/2]*N + [pi]*N + [ pi/6]*N + [ pi/2]*N + [pi]*N + [ pi/6]*N + [ pi/2]*N + [pi]*N + [ pi/6]*N + [ pi/2]*N + [pi]*N + [ 500]*12*N + [9] 
  
-lbg = [0.]*(G.shape[0]-8*Ng) + [-inf]*8*Ng
-ubg = [0.]*(G.shape[0]-8*Ng) + [ 0  ]*8*Ng
+lbg = [-0.01]*(G.shape[0]-8*N) + [-inf]*8*N
+ubg = [0.01]*(G.shape[0]-8*N) + [ 0.01  ]*8*N
 #################### End of bounds setup ###################
 
 
 
 ################# Initial guess for optimization variables ###################
+def interpolation(start,end,num,i):
+    return start + (end - start) * i / (num - 1)
 x0 = []
-# X position
-for i in range(Ng):
-    x0 += [0]
-for i in range(Ng, Ng+Nf):
-    x0 += [(i-Ng)*terminal_body_position[0]/Nf]
-# Y position
-for i in range(N):
-    x0 += [0]
-# Z position
-for i in range(N):
-    x0 += [0]
-# Roll, pitch, yaw
-for i in range(N):
-    x0 += [0,0,0]
-# X velocity
-for i in range(N):
-    x0 += [0]
-# Y velocity
-for i in range(N):
-    x0 += [0]
-# Z velocity
-for i in range(N):
-    x0 += [0]
-# euler rates
+# XYZ position
 for i in range(3*N):
     x0 += [0]
+# Roll, pitch, yaw
+for i in range(3*N):
+    x0 += [0]
+# XYZ velocity
+for i in range(N):
+    x0 += [interpolation(initial_body_position[6], terminal_body_position[6], N, i)]
+for i in range(N):
+    x0 += [interpolation(initial_body_position[7], terminal_body_position[7], N, i)]
+for i in range(N):
+    x0 += [interpolation(initial_body_position[8], terminal_body_position[8], N, i)]
+# angular velocities
+for i in range(N):
+    x0 += [0,0,0]
 # Leg joint angles
 for i in range(4):
     for j in range(3):
         for k in range(N):
-            x0 += [initial_leg_positions[i*3 + j]]
+            x0 += [0]
 # Control inputs (forces at legs)
-
-for i in range(12*Ng):
-    x0 += [robot_params['m']*gravity/4]
+for i in range(12*N):
+    x0 += [0]
+x0 += [1] # initial guess for total time T
 ################# End of initial guess ###################
 # print(x0)
 # print(lbx)
@@ -307,6 +290,9 @@ psiopt   = Xopt[5*N:6*N]
 vxopt    = Xopt[6*N:7*N]
 vyopt    = Xopt[7*N:8*N]
 vzopt    = Xopt[8*N:9*N]
+wphiopt  = Xopt[9*N:10*N]
+wthetaopt= Xopt[10*N:11*N]
+wpsiopt  = Xopt[11*N:12*N]
 jfl1_opt = Xopt[12*N:13*N]
 jfl2_opt = Xopt[13*N:14*N]
 jfl3_opt = Xopt[14*N:15*N]
@@ -319,39 +305,51 @@ jbl3_opt = Xopt[20*N:21*N]
 jbr1_opt = Xopt[21*N:22*N]
 jbr2_opt = Xopt[22*N:23*N]
 jbr3_opt = Xopt[23*N:24*N]
-uflx_opt = Xopt[24*Ng:25*Ng]
-ufly_opt = Xopt[25*Ng:26*Ng]
-uflz_opt = Xopt[26*Ng:27*Ng]
-ufrx_opt = Xopt[27*Ng:28*Ng]
-ufry_opt = Xopt[28*Ng:29*Ng]
-ufrz_opt = Xopt[29*Ng:30*Ng]
-ublx_opt = Xopt[30*Ng:31*Ng]
-ubly_opt = Xopt[31*Ng:32*Ng]
-ublz_opt = Xopt[32*Ng:33*Ng]
-ubrx_opt = Xopt[33*Ng:34*Ng]
-ubry_opt = Xopt[34*Ng:35*Ng]
-ubrz_opt = Xopt[35*Ng:36*Ng]
-
+uflx_opt = Xopt[24*N:25*N]
+ufly_opt = Xopt[25*N:26*N]
+uflz_opt = Xopt[26*N:27*N]
+ufrx_opt = Xopt[27*N:28*N]
+ufry_opt = Xopt[28*N:29*N]
+ufrz_opt = Xopt[29*N:30*N]
+ublx_opt = Xopt[30*N:31*N]
+ubly_opt = Xopt[31*N:32*N]
+ublz_opt = Xopt[32*N:33*N]
+ubrx_opt = Xopt[33*N:34*N]
+ubry_opt = Xopt[34*N:35*N]
+ubrz_opt = Xopt[35*N:36*N]
+print("Optimal total time T:", Xopt[-1])
 # get body trajectory
 body_traj = np.stack((xopt, yopt, zopt, phiopt, thetaopt, psiopt), axis=1)
 joint_traj = np.stack((jfl1_opt, jfl2_opt, jfl3_opt,
                        jfr1_opt, jfr2_opt, jfr3_opt,
                        jbl1_opt, jbl2_opt, jbl3_opt,
                        jbr1_opt, jbr2_opt, jbr3_opt), axis=1)
+ctrl_traj = np.stack((uflx_opt, ufly_opt, uflz_opt,
+                      ufrx_opt, ufry_opt, ufrz_opt,
+                      ublx_opt, ubly_opt, ublz_opt,
+                      ubrx_opt, ubry_opt, ubrz_opt), axis=1)
+# roll out trajectory using dynamics
+# N_out = 20
+# state_traj = np.stack((xopt, yopt, zopt, phiopt, thetaopt, psiopt, vxopt, vyopt, vzopt, wphiopt, wthetaopt, wpsiopt), axis=1)
+# body_traj_rollout = roll_foward_dynamics(state_traj[-1,:], joint_traj[-1,:], np.zeros(12),dt=0.1,N=N_out)
 #plot_results
 ax = quad.setupView()
-ax.set_xlim(-1, 12)
-ax.set_ylim(-2, 2)
-ax.set_zlim(-1, 12)
-ax.set_box_aspect((12,2,12))
+ax.set_xlim(-.5, .5)
+ax.set_ylim(-.5, .5)
+ax.set_zlim(-.1, .5)
+ax.set_box_aspect((1,1,.6))
 # plot a flat surface
-x,y = np.meshgrid(np.linspace(-5,5,10), np.linspace(-5,5,10))
-z = 0*x
-plt.plot(x, y, z, alpha=0.5)
+# x,y = np.meshgrid(np.linspace(-5,5,10), np.linspace(-5,5,10))
+# z = 0*x
+# plt.plot(x, y, z, alpha=0.5)
 quad.visualize_robot(joint_traj[0,:], body_traj[0,:])
 for i in range(N):
-    # if i % 5 == 4:
+    if i % 5 == 4:
         quad.visualize_robot(joint_traj[i,:], body_traj[i,:])
+
+# for i in range(N_out-1):
+#     quad.visualize_robot(joint_traj[-1,:], body_traj_rollout[i])
+
 # plot control 
 fig, ax = plt.subplots(3, 4, figsize=(15, 10), sharex=True, sharey=True)
 ax[0,0].plot(uflx_opt,'r'), ax[0,0].set_title('FLX')
@@ -375,5 +373,12 @@ ax[0,1].plot(vxopt,'r'), ax[0,1].set_title('X velocity')
 ax[1,1].plot(vyopt,'g'), ax[1,1].set_title('Y velocity')
 ax[2,1].plot(vzopt,'b'), ax[2,1].set_title('Z velocity')
 
+fig, ax = plt.subplots(3, 2, figsize=(15, 10), sharex=True, sharey=True)
+ax[0,0].plot(phiopt,'r'), ax[0,0].set_title('Roll (x)')
+ax[1,0].plot(thetaopt,'g'), ax[1,0].set_title('Pitch (y)')
+ax[2,0].plot(psiopt,'b'), ax[2,0].set_title('Yaw (z)')
+ax[0,1].plot(wphiopt,'r'), ax[0,1].set_title('Roll rate (x)')
+ax[1,1].plot(wthetaopt,'g'), ax[1,1].set_title('Pitch rate (y)')
+ax[2,1].plot(wpsiopt,'b'), ax[2,1].set_title('Yaw rate (z)')
 plt.legend()
 plt.show()
