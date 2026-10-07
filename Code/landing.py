@@ -1,5 +1,4 @@
 from casadi import *
-from httpx import get
 from utilscasadi import *
 import numpy as np
 
