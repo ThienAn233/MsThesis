@@ -1,4 +1,5 @@
 from casadi import *
+
 from utilscasadi import *
 import numpy as np
 
